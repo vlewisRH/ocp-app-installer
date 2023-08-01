@@ -1,0 +1,206 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ArgoCD
+metadata:
+  name: openshift-gitops
+  namespace: {{ gitops_namespace }}
+spec:
+  server:
+    autoscale:
+      enabled: false
+    grpc:
+      ingress:
+        enabled: false
+    ingress:
+      enabled: false
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+    route:
+      enabled: true
+    host: 'argocd-server-{{ gitops_namespace }}.apps.{{ cluster_name }}.{{ base_domain }}'
+    service:
+      type: ''
+  extraConfig:
+    helm.valuesFileSchemes: >-
+      secrets+gpg-import, secrets+gpg-import-kubernetes,
+      secrets+age-import, secrets+age-import-kubernetes,
+      secrets,secrets+literal,
+      https
+  grafana:
+    enabled: false
+    route:
+      enabled: false
+  prometheus:
+    enabled: false
+    ingress:
+      enabled: false
+    route:
+      enabled: false
+  initialSSHKnownHosts: {}
+  applicationSet:
+    resources:
+      limits:
+        cpu: '2'
+        memory: 1Gi
+      requests:
+        cpu: 500m
+        memory: 512Mi
+  repo:
+    env:
+      - name: HELM_PLUGINS
+        value: /custom-tools/helm-plugins/
+      - name: HELM_SECRETS_VALS_PATH
+        value: /custom-tools/vals
+      - name: HELM_SECRETS_VALUES_ALLOW_SYMLINKS
+        value: 'true'
+      - name: HELM_SECRETS_VALUES_ALLOW_ABSOLUTE_PATH
+        value: 'true'
+      - name: HELM_SECRETS_VALUES_ALLOW_PATH_TRAVERSAL
+        value: 'true'
+    initContainers:
+      - args:
+          - cp /usr/bin/xargs /ubi-tools/xargs
+        command:
+          - sh
+          - '-c'
+        image: "registry.redhat.io/ubi8/ubi:latest"
+        name: download-xargs
+        resources: {}
+        securityContext:
+          runAsUser: 999
+        volumeMounts:
+          - mountPath: /ubi-tools
+            name: ubi-tools
+      - args:
+          - >
+            mkdir -p /custom-tools/helm-plugins
+
+
+            # helm secrets wrapper mode installation (optional)
+
+            curl  -LsSf
+            https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz | tar
+            -xzvf-;
+
+            mv linux-amd64/helm /custom-tools/helm
+
+
+            curl -LsSf
+            https://github.com/jkroepke/helm-secrets/releases/download/v${HELM_SECRETS_VERSION}/helm-secrets.tar.gz
+            | tar -C /custom-tools/helm-plugins -xzf-;
+
+            curl -LsSf
+            https://github.com/variantdev/vals/releases/download/v${VALS_VERSION}/vals_${VALS_VERSION}_linux_amd64.tar.gz
+            | tar -xzf- -C /custom-tools/ vals;
+
+            cp /tmp/gitops-helm-wrapper/helm /custom-tools/helm-wrapper
+
+
+            chmod +x /custom-tools/*
+        command:
+          - sh
+          - '-ec'
+        env:
+          - name: HELM_SECRETS_VERSION
+            value: {{ gitops_helm_secrets_version }}
+          - name: VALS_VERSION
+            value: {{ gitops_vals_version }}
+          - name: HELM_VERSION
+            value: {{ gitops_helm_version }}
+    resources:
+      limits:
+        cpu: '1'
+        memory: 512Mi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+    serviceaccount: openshift-gitops-argocd-server
+    volumeMounts:
+      - mountPath: /home/argocd/.gnupg
+        name: home
+      - mountPath: /custom-tools
+        name: custom-tools
+      - mountPath: /usr/bin/helm
+        name: custom-tools
+        subPath: helm
+      - mountPath: /usr/local/bin/helm
+        name: custom-tools
+        subPath: helm-wrapper
+      - mountPath: /usr/bin/xargs
+        name: ubi-tools
+        subPath: xargs
+    volumes:
+      - emptyDir: {}
+        name: custom-tools
+      - emptyDir: {}
+        name: ubi-tools
+      - emptyDir: {}
+        name: home
+      - name: helm-wrapper
+        configMap:
+          defaultMode: 420
+          name: gitops-helm-wrapper
+  resourceExclusions: |
+    - apiGroups:
+      - tekton.dev
+      clusters:
+      - '*'
+      kinds:
+      - TaskRun
+      - PipelineRun
+  dex:
+    openShiftOAuth: true
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 250m
+        memory: 128Mi
+    config: |
+      connectors:
+        # OpenShift
+        - type: openshift
+          id: openshift
+          name: OpenShift
+          config:
+            issuer: https://api.{{ cluster_name }}.{{ base_domain }}:6443
+            clientID: system:serviceaccount:{{ gitops_namespace }}:openshift-gitops-argocd-dex-server
+            clientSecret: {{ dextoken.stdout_lines[dextoken.stdout_lines|length-1] }}
+            redirectURI: https://argocd-server-{{ gitops_namespace }}.apps.{{ cluster_name }}.{{ base_domain }}/api/dex/callback
+            insecureCA: true
+            groups:
+              - {{ cluster_admin_group }}
+  ha:
+    enabled: false
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 250m
+        memory: 128Mi
+  tls:
+    ca: {}
+  redis:
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 250m
+        memory: 128Mi
+  controller:
+    processors: {}
+    resources:
+      limits:
+        cpu: '4'
+        memory: 8Gi
+      requests:
+        cpu: '2'
+        memory: 2Gi
+    sharding: {}

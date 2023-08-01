@@ -1,0 +1,117 @@
+---
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: openshift-argo-rollouts
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argo-rollouts
+  namespace: openshift-gitops
+spec:
+  destination:
+    namespace: openshift-argo-rollouts
+    server: 'https://kubernetes.default.svc'
+  project: default
+  source:
+    chart: 'argo-rollouts'
+    helm:
+      values: |
+        installCRDs: true
+        keepCRDs: true
+        clusterInstall: true
+        createClusterAggregateRoles: true
+        extraObjects: []
+        controller:
+          component: rollouts-controller
+          podAnnotations: {}
+          nodeSelector: {}
+          tolerations: []
+          affinity: {}
+          topologySpreadConstraints: []
+          priorityClassName: ""
+          replicas: 2
+          image:
+            registry: quay.io
+            repository: argoproj/argo-rollouts
+            tag: ""
+            pullPolicy: IfNotPresent
+          extraArgs: []
+          extraEnv: []
+          extraContainers: []
+          initContainers: []
+          resources: {}
+          createClusterRole: true
+          metrics:
+            enabled: false
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+            successThreshold: 1
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+            timeoutSeconds: 4
+          pdb:
+            enabled: false
+        serviceAccount:
+          create: true
+          annotations: {}
+          name: ""
+        podSecurityContext:
+          runAsNonRoot: true
+        containerSecurityContext: {}
+        providerRBAC:
+          enabled: true
+          providers:
+            istio: true
+        dashboard:
+          enabled: false
+          readonly: false
+          component: rollouts-dashboard
+          podAnnotations: {}
+          nodeSelector: {}
+          tolerations: []
+          affinity: {}
+          priorityClassName: ""
+          createClusterRole: true
+          replicas: 1
+          image:
+            registry: quay.io
+            repository: argoproj/kubectl-argo-rollouts
+            tag: ""
+            pullPolicy: IfNotPresent
+          resources: {}
+          podSecurityContext:
+            runAsNonRoot: true
+          containerSecurityContext: {}
+          service:
+            port: 3100
+            targetPort: 3100
+          serviceAccount:
+            create: true
+        notifications:
+          secret:
+            create: false
+            items: {}
+          notifiers: {}
+          templates: {}
+          triggers: {}
+    repoURL: 'https://argoproj.github.io/argo-helm'
+    targetRevision: 2.26.0
+  syncPolicy:
+    automated:
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

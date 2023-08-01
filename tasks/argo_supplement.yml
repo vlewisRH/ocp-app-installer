@@ -1,0 +1,309 @@
+---
+- name: Add Argo-Rollout App
+  k8s:
+    api_key: "{{ K8S_AUTH_API_KEY }}"
+    host: "{{ K8S_AUTH_HOST }}"
+    state: present
+    definition: "{{ lookup('template', 'argo-rollout.yml.j2') }}"
+
+- name: Get ACS Project
+  k8s_info:
+    api_key: "{{ K8S_AUTH_API_KEY }}"
+    host: "{{ K8S_AUTH_HOST }}"
+    name: stackrox
+    api_version: project.openshift.io/v1
+    kind: Project
+  register: acs_project
+
+- name: Create ACS Namespace
+  k8s:
+    api_key: "{{ K8S_AUTH_API_KEY }}"
+    host: "{{ K8S_AUTH_HOST }}"
+    state: present
+    definition:
+      apiVersion: project.openshift.io/v1
+      kind: Project
+      metadata:
+        annotations:
+          openshift.io/node-selector: ''
+        labels:
+          openshift.io/cluster-monitoring: 'true'
+        name: stackrox
+  when: acs_project.resources | length  == 0
+
+## acs init bundle handling
+- name: get init bundle secret info
+  block:
+  - name: get admission-control-tls
+    k8s_info:
+      api_key: "{{ K8S_AUTH_API_KEY  }}"
+      host: "{{ K8S_AUTH_HOST }}"
+      name: admission-control-tls
+      api_version: v1
+      kind: secret
+      namespace: stackrox
+    register: admission_control_tls
+  - name: get collector-tls
+    k8s_info:
+      api_key: "{{ K8S_AUTH_API_KEY  }}"
+      host: "{{ K8S_AUTH_HOST }}"
+      name: collector-tls
+      api_version: v1
+      kind: secret
+      namespace: stackrox
+    register: collector_tls
+  - name: get sensor-tls
+    k8s_info:
+      api_key: "{{ K8S_AUTH_API_KEY  }}"
+      host: "{{ K8S_AUTH_HOST }}"
+      name: sensor-tls
+      api_version: v1
+      kind: secret
+      namespace: stackrox
+    register: sensor_tls
+  # end block
+  when: install_argo == true
+
+- name: Get timestamp from the system
+  shell: TZ='America/New_York' date +%Y-%m-%d%H-%M-%S
+  register: tstamp
+
+- name: default value for cert_expired
+  set_fact:
+    certs_expired: false
+
+- name: check admission_control_tls expiration
+  set_fact:
+    certs_expired: true
+  when:
+    - admission_control_tls is defined
+    - admission_control_tls.resources is defined
+    - admission_control_tls.resources | length > 0
+    - admission_control_tls.resources[0]['metadata']['annotations']['init-bundle.stackrox.io/expires-at'] <= tstamp.stdout
+
+- name: check collector_tls expiration
+  set_fact:
+    certs_expired: true
+  when:
+    - collector_tls is defined
+    - collector_tls.resources is defined
+    - collector_tls.resources | length > 0
+    - collector_tls.resources[0]['metadata']['annotations']['init-bundle.stackrox.io/expires-at'] <= tstamp.stdout
+
+- name: check bundle expiration
+  set_fact:
+    certs_expired: true
+  when:
+    - sensor_tls is defined
+    - sensor_tls.resources is defined
+    - sensor_tls.resources | length > 0
+    - sensor_tls.resources[0]['metadata']['annotations']['init-bundle.stackrox.io/expires-at'] <= tstamp.stdout
+
+- name: Get central password
+  kubernetes.core.k8s_info:
+    api_key: "{{ (mgmt_cluster) | ternary(K8S_AUTH_API_KEY, omit) }}"
+    host: "{{ (mgmt_cluster) | ternary(K8S_AUTH_HOST, omit) }}"
+    name: central-htpasswd
+    api_version: v1
+    kind: secret
+    namespace: stackrox
+  register: central_password
+  until: central_password is succeeded
+  retries: 30
+  delay: 10
+  failed_when: central_password.resources[0].data.password is not defined
+
+- name: create new acs init bundle
+  when:
+    - install_argo == true
+    - acs_init_bundle_reset == true or
+      certs_expired == true or
+      admission_control_tls.resources | length == 0 or
+      collector_tls.resources | length == 0 or
+      sensor_tls.resources | length == 0
+  block:
+    - name: get init bundles
+      ansible.builtin.uri:
+        url: '{{ central_url }}'
+        user: "admin"
+        password: '{{ central_password.resources[0].data.password | b64decode }}'
+        method: GET
+        force_basic_auth: true
+        headers:
+          Content-Type: "application/json"
+        status_code: 200
+        validate_certs: false
+      register: all_init_bundles
+
+    - name: create items list
+      set_fact:
+        bundle_list: "{{ all_init_bundles.json['items'] | list}}"
+        bundle_name: "acs-init-bundle-{{ cluster_name }}"
+
+    - name: Setting facts so that they will be persisted in the fact cache
+      set_fact:
+        init_bundle_id: "{{ item.id }}"
+      when: item.name == bundle_name
+      with_items: "{{ bundle_list }}"
+
+    - name: delete init bundle
+      ansible.builtin.uri:
+        url: '{{ central_url }}'
+        user: "admin"
+        password: '{{ central_password.resources[0].data.password | b64decode }}'
+        method: PATCH
+        force_basic_auth: true
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body: '{
+                "ids": [ "{{ init_bundle_id }}" ],
+                "confirmImpactedClusterIds": [ "{{ init_bundle_id }}" ]
+              }'
+        status_code: 200
+        validate_certs: false
+      when: init_bundle_id is defined
+
+    - name: generate init bundle
+      ansible.builtin.uri:
+        url: "https://central-stackrox.apps.{{ central_url }}.{{ cluster domain }}/v1/cluster-init/init-bundles"
+        user: "admin"
+        password: '{{ central_password.resources[0].data.password | b64decode }}'
+        method: POST
+        force_basic_auth: true
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body: '{"name": "acs-init-bundle-{{ cluster_name }}" }'
+        status_code: 200
+        validate_certs: false
+      register: init_bundle
+
+    - name: Create Secret for ACS
+      k8s:
+        api_key: "{{ K8S_AUTH_API_KEY  }}"
+        host: "{{ K8S_AUTH_HOST }}"
+        state: present
+        apply: true
+        namespace: "stackrox"
+        force: true
+        definition: "{{ init_bundle.json.kubectlBundle | b64decode }}"
+  ## end of the block
+
+- name: Create Openshift authProvider
+  ansible.builtin.uri:
+    url: "https://central-stackrox.apps.{{ central_url }}.{{ cluster domain }}/v1/authProviders"
+    user: admin
+    password: "{{ central_password.resources[0].data.password | b64decode }}"
+    method: POST
+    force_basic_auth: true
+    headers:
+      Content-type: "application/json"
+    validate_certs: false
+    body_format: json
+    body:
+      name: "Openshift"
+      type: "openshift"
+      uiEndpoint: "central-stackrox.apps.{{ central_url }}.{{ cluster domain }}"
+      enabled: true
+      validated: false
+      traits:
+        mutabilityMode: "ALLOW_MUTATE"
+        visibility: "VISIBLE"
+  register: new_auth
+  changed_when: new_auth.status == 200
+  failed_when:
+    - new_auth.failed
+    - "'Could not add AuthProvider due to name validation: .* already exists' | regex_search(new_auth.json.error) == false"
+
+- name: Get authProviders
+  ansible.builtin.uri:
+    url: "https://central-stackrox.apps.{{ central_url }}.{{ cluster domain }}/v1/authProviders"
+    user: admin
+    password: "{{ central_password.resources[0].data.password | b64decode }}"
+    method: GET
+    force_basic_auth: true
+    headers:
+      Content-Type: "application/json"
+    validate_certs: false
+  register: auth_providers
+
+- name: Extract authProvider
+  ansible.builtin.set_fact:
+    openshift_provider: "{{ auth_providers.json.authProviders | json_query('[?name==`' + auth_provider_name + '`]') | first }}"
+
+- name: Create New Minimum Role
+  ansible.builtin.uri:
+    url: "https://central-stackrox.apps.{{ central_url }}.{{ cluster domain }}/v1/groupsbatch"
+    user: admin
+    password: "{{ central_password.resources[0].data.password | b64decode }}"
+    method: POST
+    force_basic_auth: true
+    headers:
+      Content-type: "application/json"
+    validate_certs: false
+    body_format: json
+    body:
+      required_groups:
+        - props:
+            authProviderId: "{{ openshift_provider.id }}"
+          roleName: "None"
+  register: min_role
+  changed_when: min_role.status == 200
+  failed_when:
+    - min_role.failed
+    - "'cannot add a default group of auth provider .* as a default group already exists' | regex_search(min_role.json.error) == false"
+
+- name: Get ACS Group List
+  ansible.builtin.uri:
+    url: "https://central-stackrox.apps.{{ central_url }}.{{ cluster domain }}/v1/groups"
+    user: admin
+    password: "{{ central_password.resources[0].data.password | b64decode }}"
+    method: GET
+    force_basic_auth: true
+    headers:
+      Content-Type: "application/json"
+    validate_certs: false
+  register: group_list
+
+- name: Add Management Role
+  ansible.builtin.uri:
+    url: "https://central-stackrox.apps.{{ central_url }}.{{ cluster domain }}/v1/groups"
+    user: admin
+    password: "{{ central_password.resources[0].data.password | b64decode }}"
+    method: POST
+    force_basic_auth: true
+    headers:
+      Content-Type: "application/json"
+    validate_certs: false
+    body_format: json
+    body:
+      props:
+        authProviderId: "{{ openshift_provider.id }}"
+        key: groups
+        value: "{{ cluster_admin_group }}"
+      roleName: Admin
+  register: acs_group
+  changed_when: acs_group.status == 200
+  when: group_list.json.groups | json_query('[?props.value==`' + cluster_admin_group + '`]') | length == 0
+
+- name: Add Analyst Role
+  ansible.builtin.uri:
+    url: "https://central-stackrox.apps.{{ central_url }}.{{ cluster domain }}/v1/groups"
+    user: admin
+    password: "{{ central_password.resources[0].data.password | b64decode }}"
+    method: POST
+    force_basic_auth: true
+    headers:
+      Content-Type: "application/json"
+    validate_certs: false
+    body_format: json
+    body:
+      props:
+        authProviderId: "{{ openshift_provider.id }}"
+        key: groups
+        value: "{{ cluster_view_group }}"
+      roleName: Analyst
+  register: acs_group
+  changed_when: acs_group.status == 200
+  when: group_list.json.groups | json_query('[?props.value==`' + cluster_view_group + '`]') | length == 0

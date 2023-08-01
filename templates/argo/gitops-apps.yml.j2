@@ -1,0 +1,150 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: argo-apps-day-2
+  namespace: {{ gitops_namespace }}
+  labels:
+    velero.io/exclude-from-backup: "true"
+spec:
+  generators:
+  - git:
+      repoURL: {{ gitops_repo_url }}
+{% if branch_tag != '' %}
+      revision: {{ branch_tag }}
+{% else %}
+      revision: master
+{% endif %}
+      directories:
+      - path: 'apps/day-2/*'
+  template:
+    metadata:
+      name: '{{ metadata_name }}'
+      labels:
+        app: argo-apps-day-2
+        velero.io/exclude-from-backup: "true"
+    spec:
+      project: default
+      source:
+        path: '{{ source_path }}'
+        repoURL: '{{ gitops_repo_url }}'
+{% if branch_tag != '' %}
+        targetRevision: {{ branch_tag }}
+{% else %}
+        targetRevision: master
+{% endif %}
+        helm:
+          parameters:
+          - name: gitops_repo_url
+            value: '{{ gitops_repo_url }}'
+          - name: gitops_namespace
+            value: '{{ gitops_namespace }}'
+          - name: cluster_name
+            value: {{ cluster_name }}       
+          - name: infra_id
+            value: {{ infra_id }}
+          - name: region
+            value: {{ region }}
+          - name: ami_id
+            value: {{ ami_id }}
+          - name: instance_type
+            value: '{{ infra.ec2_type }}'
+          - name: vpc_cidr
+            value: {{ vpc_cidr }}
+          - name: vpn_cidr
+            value: {{ vpn_cidr }} 
+          - name: subnet_id_a
+            value: {{ subnet_id_a }}
+          - name: subnet_id_b
+            value: {{ subnet_id_b }}
+          - name: subnet_id_c
+            value: {{ subnet_id_c }}
+          - name: ldapurl
+            value: {{ ldapurl }}
+          - name: radiant_url
+            value: {{ radiant_url }}
+          - name: cluster_admin_group
+            value: {{ cluster_admin_group }}
+          - name: cluster_view_group
+            value: {{ cluster_view_group }}
+          - name: group_filter
+            value: {{ group_filter }}
+          - name: ldap_filter
+            value: "{{ ldap_filter }}"
+          - name: binddn_uid
+            value: "{{ binddn | regex_search('[^,]*') }}"
+          - name: okta_client_id
+            value: {{ okta_client_id }}
+          - name: okta_issuer
+            value: {{ okta_issuer }}
+          - name: pagerduty_prometheus_key
+            value: {{ pagerduty_prometheus_key }}
+          - name: pagerduty_hub_prometheus_key
+            value: {{ pagerduty_hub_prometheus_key }}
+          - name: pagerduty_msi_prometheus_key
+            value: {{ pagerduty_hub_prometheus_key }}
+          - name: base_domain
+            value: {{ base_domain }}
+          - name: disable_self_provisioner
+            value: "{{ disable_self_provisioner | string }}"
+          - name: enable_gatekeeper_enforcement
+            value: "{{ enable_gatekeeper_enforcement | string }}"
+          - name: enable_external_load_balancer
+            value: "{{ enable_external_load_balancer | string }}"
+          - name: mgmt_cluster
+            value: "{{ mgmt_cluster | string }}"
+          - name: central_url
+            value: "{{ central_url }}"
+          - name: acmDisableHubSelfManagement
+            value: "{{ acmDisableHubSelfManagement | string }}"
+{% if branch_tag != '' %}
+          - name: targetrevision
+            value: {{ branch_tag }}
+{% endif %}
+          valueFiles:
+          - values/values.yaml
+          values: |
+            amq_broker: {{ redhat_operators.amq_broker }}
+            aap: {{ redhat_operators.aap }}
+            container_security_operator: {{ redhat_operators.container_security_operator }}
+            fio: {{ redhat_operators.fio }}
+            gatekeeper: {{ redhat_operators.gatekeeper }}
+            gso: {{ community_operators.gso }}
+            compliance: {{ redhat_operators.compliance }}
+            acm: {{ redhat_operators.acm }}
+            acs: {{ redhat_operators.acs }}
+            adp: {{ redhat_operators.adp }}
+            serviceMesh: {{ redhat_operators.serviceMesh }}
+            kiali: {{ redhat_operators.kiali }}
+            elasticSearch: {{ redhat_operators.elasticSearch }}
+            jeager: {{ redhat_operators.jeager }}
+            wt: {{ redhat_operators.wt }}
+            resource_limits: {{ resource_limits }}
+            subnets:
+{% for subnet in subnet_facts.subnets %}
+            - subnet_id: {{ subnet.subnet_id }}
+              availability_zone: {{ subnet.availability_zone }}
+{% endfor %}
+            ado_groups:
+{% for group in ado_groups %}
+            - "{{ group }}"
+{% endfor %}
+      ignoreDifferences:
+      - group: '*'
+        kind: "Project"
+        jsonPointers:
+        - /metadata/annotations
+        - /metadata/labels
+      - group: '*'
+        kind: "MachineSet"
+        jsonPointers:
+        - /spec/replicas
+      syncPolicy:
+        preserveResourcesOnDeletion: true
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - RespectIgnoreDifferences=true
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: {{ gitops_namespace }}

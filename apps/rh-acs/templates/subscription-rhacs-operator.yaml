@@ -1,0 +1,11 @@
+﻿apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: {{ .Values.acs.name }}
+  namespace: {{ .Values.acs.namespace }}
+spec:
+  channel: {{ .Values.acs.channel }}
+  installPlanApproval: {{ .Values.acs.installPlanApproval }}
+  name: {{ .Values.acs.name }}
+  source: {{ .Values.acs.source }}
+  sourceNamespace: {{ .Values.acs.sourceNamespace }}

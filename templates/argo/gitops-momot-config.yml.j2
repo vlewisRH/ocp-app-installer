@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ argoProj-appProj-name }}
+  namespace: {{ gitops_namespace }}
+spec:
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: Namespace
+  destinations:
+    - name: '*'
+      namespace: ploigos*
+      server: '*'
+    - name: '*'
+      namespace: {{ team_name }}*
+      server: '*'
+    - name: '*'
+      namespace: '*'
+      server: '*'
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  sourceRepos:
+    - >-
+      '{{ source_repo }}'

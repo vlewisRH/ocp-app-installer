@@ -1,0 +1,32 @@
+---
+# tasks file for ocp-installer
+- name: Install Gitops
+  ansible.builtin.include_tasks: install_argo.yml
+  when: install_argo
+
+- name: Set argo apps name
+  ansible.builtin.set_fact:
+    metadata_name: !unsafe '{{ path.basename }}'
+  no_log: true
+
+- name: Create gitops-apps App Set
+  kubernetes.core.k8s:
+    api_key: "{{ K8S_AUTH_API_KEY }}"
+    host: "{{ K8S_AUTH_HOST }}"
+    state: present
+    definition: "{{ lookup('template', 'argo/gitops-apps-day-1.yml.j2') }}"
+    apply: true
+  when: install_argo_apps
+
+- name: Test Argo Apps
+  ansible.builtin.include_tasks: check_apps.yml
+  when: test_argo_apps
+  vars:
+    app_set_name: 'argo-apps'
+
+- name: Supplemental Argo Tasks
+  ansible.builtin.include_tasks: argo_supplement.yml
+  when: install_argo_apps
+
+- name: Update ACM creds
+  ansible.builtin.include_tasks: update_acm_creds.yml

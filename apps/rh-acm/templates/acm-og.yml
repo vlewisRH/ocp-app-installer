@@ -1,0 +1,8 @@
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: acm-operatorgroup
+  namespace: {{ .Values.acm.namespace }}
+spec:
+  targetNamespaces:
+  - {{ .Values.acm.namespace }}
